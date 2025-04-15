@@ -39,6 +39,10 @@ type Tuple struct {
 	index   map[string]int // map from col name to offset in columns
 }
 
+type Tuple2 interface {
+	Get() (any, any)
+}
+
 func (col *Tuple) Reset() {
 	for i := range col.columns {
 		col.columns[i].Reset()
@@ -510,6 +514,24 @@ func (col *Tuple) AppendRow(v any) error {
 	if value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
+
+	if tuple2, ok := v.(Tuple2); ok {
+		if 2 != len(col.columns) {
+			return &Error{
+				ColumnType: string(col.chType),
+				Err:        fmt.Errorf("invalid size. expected %d got %d", len(col.columns), 2),
+			}
+		}
+		elem1, elem2 := tuple2.Get()
+		if err := col.columns[0].AppendRow(elem1); err != nil {
+			return err
+		}
+		if err := col.columns[1].AppendRow(elem2); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	switch value.Kind() {
 	case reflect.Struct:
 		if valuer, ok := v.(driver.Valuer); ok {
