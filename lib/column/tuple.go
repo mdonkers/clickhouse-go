@@ -39,6 +39,10 @@ type Tuple struct {
 	index   map[string]int // map from col name to offset in columns
 }
 
+type Tuple2 interface {
+	Get() (any, any)
+}
+
 func (col *Tuple) Reset() {
 	for i := range col.columns {
 		col.columns[i].Reset()
@@ -505,6 +509,20 @@ func (col *Tuple) Append(v any) (nulls []uint8, err error) {
 }
 
 func (col *Tuple) AppendRow(v any) error {
+	// Has to be before the Reflection logic, otherwise 'Struct' type gets triggered
+	if 2 == len(col.columns) {
+		if tuple2, ok := v.(Tuple2); ok {
+			elem1, elem2 := tuple2.Get()
+			if err := col.columns[0].AppendRow(elem1); err != nil {
+				return err
+			}
+			if err := col.columns[1].AppendRow(elem2); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
 	// allows support of tuples where map or slice is typed and NOT any. Will fail if tuple isn't consistent
 	value := reflect.ValueOf(v)
 	if value.Kind() == reflect.Pointer {
