@@ -108,6 +108,11 @@ type (
 		// It is safe (and recommended) to call Close via defer immediately after PrepareBatch.
 		// Close does not guarantee that buffered rows are sent; call Send() to finalize the INSERT.
 		Close() error
+		// Reset prepares the batch for reuse after Send() has been called.
+		// This allows the underlying block and column buffers to be reused,
+		// reducing allocations for repeated batch inserts to the same table.
+		// The provided context will be used for the new batch session.
+		Reset(ctx context.Context) error
 	}
 	BatchColumn interface {
 		// Append appends a value to the underlying column buffer.

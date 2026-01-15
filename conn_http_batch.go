@@ -288,4 +288,26 @@ func (b *httpBatch) Columns() []column.Interface {
 	return slices.Clone(b.block.Columns)
 }
 
+// Reset prepares the batch for reuse after Send() has been called.
+// This allows the underlying block and column buffers to be reused,
+// reducing allocations for repeated batch inserts to the same table.
+// The provided context will be used for the new batch session.
+func (b *httpBatch) Reset(ctx context.Context) error {
+	// Can't reset if there was an error
+	if b.err != nil {
+		return b.err
+	}
+
+	// Reset batch state
+	b.ctx = ctx
+	b.sent = false
+	b.released = false
+	b.err = nil
+
+	// Reset block data while preserving column structure and buffer capacity
+	b.block.Reset()
+
+	return nil
+}
+
 var _ driver.Batch = (*httpBatch)(nil)
