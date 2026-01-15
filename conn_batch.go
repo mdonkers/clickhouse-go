@@ -338,6 +338,35 @@ func (b *batch) Close() error {
 	return nil
 }
 
+// Reset prepares the batch for reuse after Send() has been called.
+// This allows the underlying block and column buffers to be reused,
+// reducing allocations for repeated batch inserts to the same table.
+// The provided context will be used for the new batch session.
+func (b *batch) Reset(ctx context.Context) error {
+	// Can't reset if there was an error
+	if b.err != nil {
+		return b.err
+	}
+
+	// Close current query session if it's still open
+	if !b.sent && !b.released {
+		if err := b.closeQuery(); err != nil {
+			return err
+		}
+	}
+
+	// Reset batch state
+	b.ctx = ctx
+	b.sent = false
+	b.err = nil
+
+	// Reset block data while preserving column structure and buffer capacity
+	b.block.Reset()
+
+	// Re-establish INSERT session with the server
+	return b.resetConnection()
+}
+
 type batchColumn struct {
 	err     error
 	batch   driver.Batch

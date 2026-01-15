@@ -30,6 +30,7 @@ coverage.txt
 .vscode/**
 dev/*
 .run/**
+.claude/**
 
 vendor
 
