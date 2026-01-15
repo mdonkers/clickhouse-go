@@ -73,6 +73,11 @@ type (
 		Rows() int
 		Columns() []column.Interface
 		Close() error
+		// Reset prepares the batch for reuse after Send() has been called.
+		// This allows the underlying block and column buffers to be reused,
+		// reducing allocations for repeated batch inserts to the same table.
+		// The provided context will be used for the new batch session.
+		Reset(ctx context.Context) error
 	}
 	BatchColumn interface {
 		Append(any) error
