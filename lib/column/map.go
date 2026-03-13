@@ -4,9 +4,10 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 	"strings"
+
+	"github.com/ClickHouse/ch-go/proto"
 )
 
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Columns/ColumnMap.cpp
@@ -99,9 +100,8 @@ func (col *Map) ScanRow(dest any, i int) error {
 	if scanner, ok := dest.(sql.Scanner); ok {
 		return scanner.Scan(col.row(i).Interface())
 	}
-	value := reflect.Indirect(reflect.ValueOf(dest))
-	if value.Type() == col.scanType {
-		value.Set(col.row(i))
+	// Fast path: reflection-free scan for common map types
+	if err := col.scanRowPlain(dest, i); err == nil {
 		return nil
 	}
 	if om, ok := dest.(IterableOrderedMap); ok {
@@ -116,6 +116,11 @@ func (col *Map) ScanRow(dest any, i int) error {
 		for i := range keys {
 			om.Put(keys[i], values[i])
 		}
+		return nil
+	}
+	value := reflect.Indirect(reflect.ValueOf(dest))
+	if value.Type() == col.scanType {
+		value.Set(col.row(i))
 		return nil
 	}
 	return &ColumnConverterError{
@@ -298,6 +303,266 @@ func (col *Map) WriteStatePrefix(encoder *proto.Buffer) error {
 		}
 	}
 	return nil
+}
+
+var errMapFastPathUnsupported = fmt.Errorf("unsupported type for map fast path")
+
+// scanRowPlain is a reflection-free scan for common map types.
+// It dispatches on the key column type, then the value column type,
+// then verifies the destination type matches.
+func (col *Map) scanRowPlain(dest any, i int) error {
+	switch kc := col.keys.(type) {
+	case *String:
+		return scanMapStringKey(col, dest, i, &kc.col)
+	case *Float32:
+		return scanMapTypedKey(col, dest, i, []float32(kc.col))
+	case *Float64:
+		return scanMapTypedKey(col, dest, i, []float64(kc.col))
+	case *Int8:
+		return scanMapTypedKey(col, dest, i, []int8(kc.col))
+	case *Int16:
+		return scanMapTypedKey(col, dest, i, []int16(kc.col))
+	case *Int32:
+		return scanMapTypedKey(col, dest, i, []int32(kc.col))
+	case *Int64:
+		return scanMapTypedKey(col, dest, i, []int64(kc.col))
+	case *UInt8:
+		return scanMapTypedKey(col, dest, i, []uint8(kc.col))
+	case *UInt16:
+		return scanMapTypedKey(col, dest, i, []uint16(kc.col))
+	case *UInt32:
+		return scanMapTypedKey(col, dest, i, []uint32(kc.col))
+	case *UInt64:
+		return scanMapTypedKey(col, dest, i, []uint64(kc.col))
+	case *Bool:
+		return scanMapTypedKey(col, dest, i, []bool(kc.col))
+	}
+	return errMapFastPathUnsupported
+}
+
+// mapRange returns the start (inclusive) and end (exclusive) indices
+// in the flattened key/value arrays for map row i.
+func (col *Map) mapRange(i int) (int, int) {
+	end := int(col.offsets.col.Row(i))
+	start := 0
+	if i > 0 {
+		start = int(col.offsets.col.Row(i - 1))
+	}
+	return start, end
+}
+
+// scanMapStringKey handles maps with String keys. String keys need special
+// handling because proto.ColStr stores data in columnar format and requires
+// Row(i) to access individual values, unlike numeric types which are Go slices.
+func scanMapStringKey(col *Map, dest any, i int, keys *proto.ColStr) error {
+	start, end := col.mapRange(i)
+	switch vc := col.values.(type) {
+	case *String:
+		d, ok := dest.(*map[string]string)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		m := make(map[string]string, end-start)
+		for j := start; j < end; j++ {
+			m[keys.Row(j)] = vc.col.Row(j)
+		}
+		*d = m
+		return nil
+	case *Float32:
+		d, ok := dest.(*map[string]float32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []float32(vc.col))
+		return nil
+	case *Float64:
+		d, ok := dest.(*map[string]float64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []float64(vc.col))
+		return nil
+	case *Int8:
+		d, ok := dest.(*map[string]int8)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []int8(vc.col))
+		return nil
+	case *Int16:
+		d, ok := dest.(*map[string]int16)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []int16(vc.col))
+		return nil
+	case *Int32:
+		d, ok := dest.(*map[string]int32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []int32(vc.col))
+		return nil
+	case *Int64:
+		d, ok := dest.(*map[string]int64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []int64(vc.col))
+		return nil
+	case *UInt8:
+		d, ok := dest.(*map[string]uint8)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []uint8(vc.col))
+		return nil
+	case *UInt16:
+		d, ok := dest.(*map[string]uint16)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []uint16(vc.col))
+		return nil
+	case *UInt32:
+		d, ok := dest.(*map[string]uint32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []uint32(vc.col))
+		return nil
+	case *UInt64:
+		d, ok := dest.(*map[string]uint64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []uint64(vc.col))
+		return nil
+	case *Bool:
+		d, ok := dest.(*map[string]bool)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapStringKeyTypedVal(d, start, end, keys, []bool(vc.col))
+		return nil
+	}
+	return errMapFastPathUnsupported
+}
+
+func scanMapStringKeyTypedVal[V any](dest *map[string]V, start, end int, keys *proto.ColStr, vals []V) {
+	m := make(map[string]V, end-start)
+	for j := start; j < end; j++ {
+		m[keys.Row(j)] = vals[j]
+	}
+	*dest = m
+}
+
+// scanMapTypedKey handles maps with typed (numeric/bool) keys backed by Go slices.
+func scanMapTypedKey[K comparable](col *Map, dest any, i int, keys []K) error {
+	start, end := col.mapRange(i)
+	switch vc := col.values.(type) {
+	case *String:
+		d, ok := dest.(*map[K]string)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyStringVal(d, start, end, keys, &vc.col)
+		return nil
+	case *Float32:
+		d, ok := dest.(*map[K]float32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []float32(vc.col))
+		return nil
+	case *Float64:
+		d, ok := dest.(*map[K]float64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []float64(vc.col))
+		return nil
+	case *Int8:
+		d, ok := dest.(*map[K]int8)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []int8(vc.col))
+		return nil
+	case *Int16:
+		d, ok := dest.(*map[K]int16)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []int16(vc.col))
+		return nil
+	case *Int32:
+		d, ok := dest.(*map[K]int32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []int32(vc.col))
+		return nil
+	case *Int64:
+		d, ok := dest.(*map[K]int64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []int64(vc.col))
+		return nil
+	case *UInt8:
+		d, ok := dest.(*map[K]uint8)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []uint8(vc.col))
+		return nil
+	case *UInt16:
+		d, ok := dest.(*map[K]uint16)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []uint16(vc.col))
+		return nil
+	case *UInt32:
+		d, ok := dest.(*map[K]uint32)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []uint32(vc.col))
+		return nil
+	case *UInt64:
+		d, ok := dest.(*map[K]uint64)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []uint64(vc.col))
+		return nil
+	case *Bool:
+		d, ok := dest.(*map[K]bool)
+		if !ok {
+			return errMapFastPathUnsupported
+		}
+		scanMapTypedKeyTypedVal(d, start, end, keys, []bool(vc.col))
+		return nil
+	}
+	return errMapFastPathUnsupported
+}
+
+func scanMapTypedKeyTypedVal[K comparable, V any](dest *map[K]V, start, end int, keys []K, vals []V) {
+	m := make(map[K]V, end-start)
+	for j := start; j < end; j++ {
+		m[keys[j]] = vals[j]
+	}
+	*dest = m
+}
+
+func scanMapTypedKeyStringVal[K comparable](dest *map[K]string, start, end int, keys []K, vals *proto.ColStr) {
+	m := make(map[K]string, end-start)
+	for j := start; j < end; j++ {
+		m[keys[j]] = vals.Row(j)
+	}
+	*dest = m
 }
 
 func (col *Map) row(n int) reflect.Value {

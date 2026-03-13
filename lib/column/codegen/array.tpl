@@ -43,3 +43,4 @@ func (col *Array) appendRowPlain(v any) error {
 		return col.appendRowDefault(v)
 	}
 }
+
