@@ -261,12 +261,189 @@ func (col *Array) ScanRow(dest any, row int) error {
 		}
 		return scanner.Scan(value.Interface())
 	}
+
+	// Fast path: reflection-free scan for depth-1 plain arrays
+	if col.depth == 1 {
+		if err := col.scanRowPlain(dest, row); err == nil {
+			return nil
+		}
+		// Fall through to reflection path for unsupported types
+	}
+
 	elem := reflect.Indirect(reflect.ValueOf(dest))
 	value, err := col.scan(elem.Type(), row)
 	if err != nil {
 		return err
 	}
 	elem.Set(value)
+	return nil
+}
+
+// scanRowPlain is a reflection-free scan for depth-1 plain arrays.
+// It type-switches on the destination pointer and directly copies from the underlying
+// typed column slice, avoiding per-element reflection operations that dominate CPU
+// time in the default scanSlice path.
+func (col *Array) scanRowPlain(dest any, row int) error {
+	switch d := dest.(type) {
+	case *[]float32:
+		if tc, ok := col.values.(*Float32); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]float64:
+		if tc, ok := col.values.(*Float64); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]int8:
+		if tc, ok := col.values.(*Int8); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]int16:
+		if tc, ok := col.values.(*Int16); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]int32:
+		if tc, ok := col.values.(*Int32); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]int64:
+		if tc, ok := col.values.(*Int64); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]uint8:
+		if tc, ok := col.values.(*UInt8); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]uint16:
+		if tc, ok := col.values.(*UInt16); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]uint32:
+		if tc, ok := col.values.(*UInt32); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]uint64:
+		if tc, ok := col.values.(*UInt64); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+		return scanRowPlainNumericDispatch(col, d, row)
+	case *[]bool:
+		if tc, ok := col.values.(*Bool); ok {
+			return scanRowPlainTyped(col, d, row, tc.col)
+		}
+	case *[]string:
+		if tc, ok := col.values.(*String); ok {
+			return scanRowPlainString(col, d, row, &tc.col)
+		}
+	default:
+		return fmt.Errorf("unsupported type for scanRowPlain: %T", dest)
+	}
+	return fmt.Errorf("column type mismatch for scanRowPlain")
+}
+
+// scanRowPlainTyped is a reflection-free scan for depth-1 plain arrays.
+// It directly accesses the underlying typed column slice and copies data
+// into the destination, avoiding per-element reflection operations.
+func scanRowPlainTyped[T any](col *Array, dest *[]T, row int, typedCol []T) error {
+	offset := col.offsets[0]
+	end := int(offset.values.col.Row(row))
+	start := 0
+	if row > 0 {
+		start = int(offset.values.col.Row(row - 1))
+	}
+	size := end - start
+
+	// Always allocate a fresh slice to match the reflection path's semantics:
+	// 1. Empty arrays must return []T{} (non-nil), not nil
+	// 2. Callers may save previous results, so we must not alias backing arrays
+	*dest = make([]T, size)
+	copy(*dest, typedCol[start:end])
+	return nil
+}
+
+// scanRowPlainString is a reflection-free scan for depth-1 Array(String) columns.
+// Unlike numeric types, proto.ColStr stores data in a columnar format (Buf + Pos)
+// rather than as a []string, so we loop with Row(i) instead of using copy().
+func scanRowPlainString(col *Array, dest *[]string, row int, src *proto.ColStr) error {
+	offset := col.offsets[0]
+	end := int(offset.values.col.Row(row))
+	start := 0
+	if row > 0 {
+		start = int(offset.values.col.Row(row - 1))
+	}
+	size := end - start
+
+	// Always allocate fresh — see scanRowPlainTyped for rationale
+	*dest = make([]string, size)
+	for i := 0; i < size; i++ {
+		(*dest)[i] = src.Row(start + i)
+	}
+	return nil
+}
+
+// numericScannable constrains types that support Go numeric type conversions.
+// All integer and floating-point types are mutually convertible (with possible
+// truncation), matching the semantics of reflect.Value.Convert used by the
+// reflection-based scan path.
+type numericScannable interface {
+	~int8 | ~int16 | ~int32 | ~int64 | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~float32 | ~float64
+}
+
+// scanRowPlainNumericDispatch dispatches on the source column type when the
+// destination numeric type D doesn't exactly match the column's native type.
+// This enables reflection-free scanning with numeric conversion, e.g.
+// scanning an Array(Int64) column into a []float64 destination.
+func scanRowPlainNumericDispatch[D numericScannable](col *Array, dest *[]D, row int) error {
+	switch tc := col.values.(type) {
+	case *Float32:
+		return scanRowPlainConvert(col, dest, row, []float32(tc.col))
+	case *Float64:
+		return scanRowPlainConvert(col, dest, row, []float64(tc.col))
+	case *Int8:
+		return scanRowPlainConvert(col, dest, row, []int8(tc.col))
+	case *Int16:
+		return scanRowPlainConvert(col, dest, row, []int16(tc.col))
+	case *Int32:
+		return scanRowPlainConvert(col, dest, row, []int32(tc.col))
+	case *Int64:
+		return scanRowPlainConvert(col, dest, row, []int64(tc.col))
+	case *UInt8:
+		return scanRowPlainConvert(col, dest, row, []uint8(tc.col))
+	case *UInt16:
+		return scanRowPlainConvert(col, dest, row, []uint16(tc.col))
+	case *UInt32:
+		return scanRowPlainConvert(col, dest, row, []uint32(tc.col))
+	case *UInt64:
+		return scanRowPlainConvert(col, dest, row, []uint64(tc.col))
+	}
+	return fmt.Errorf("column type mismatch for scanRowPlain")
+}
+
+// scanRowPlainConvert is like scanRowPlainTyped but performs a numeric type
+// conversion from source type S to destination type D for each element.
+// Used when the column's native type differs from the destination slice type,
+// e.g. Int64 column → []float64 destination.
+func scanRowPlainConvert[S, D numericScannable](col *Array, dest *[]D, row int, src []S) error {
+	offset := col.offsets[0]
+	end := int(offset.values.col.Row(row))
+	start := 0
+	if row > 0 {
+		start = int(offset.values.col.Row(row - 1))
+	}
+	size := end - start
+
+	*dest = make([]D, size)
+	for i := 0; i < size; i++ {
+		(*dest)[i] = D(src[start+i])
+	}
 	return nil
 }
 
