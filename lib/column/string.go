@@ -143,6 +143,12 @@ func (col *String) AppendRow(v any) error {
 	return nil
 }
 
+// AppendRowString is a zero-allocation fast path for inserting a non-null string,
+// bypassing the interface boxing that AppendRow(v any) incurs.
+func (col *String) AppendRowString(s string) {
+	col.col.Append(s)
+}
+
 func (col *String) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []string:
