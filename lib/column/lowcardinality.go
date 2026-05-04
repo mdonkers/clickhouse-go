@@ -46,8 +46,9 @@ type LowCardinality struct {
 	keys64 UInt64
 
 	append struct {
-		keys  []int
-		index map[any]int
+		keys     []int
+		index    map[any]int
+		strIndex map[string]int // zero-alloc cache for string LowCardinality; kept in sync with index
 	}
 	name string
 }
@@ -60,6 +61,7 @@ func (col *LowCardinality) Reset() {
 	col.keys32.Reset()
 	col.keys64.Reset()
 	col.append.index = make(map[any]int)
+	clear(col.append.strIndex)
 	col.append.keys = col.append.keys[:0]
 }
 
@@ -150,6 +152,40 @@ func (col *LowCardinality) AppendRow(v any) error {
 	return nil
 }
 
+// AppendRowString is a zero-allocation fast path for inserting a non-null string into a
+// LowCardinality(String) column. It uses a map[string]int index to avoid the interface boxing
+// that AppendRow(v any) incurs on every cache hit. Cache misses still box once to keep
+// col.append.index (used by Encode) in sync.
+func (col *LowCardinality) AppendRowString(s string) error {
+	col.rows++
+	if col.index.Rows() == 0 { // init
+		//nolint:errcheck
+		col.index.AppendRow(nil)
+		if col.nullable {
+			//nolint:errcheck
+			col.index.AppendRow(nil)
+		}
+	}
+	if col.append.strIndex == nil {
+		col.append.strIndex = make(map[string]int, 16)
+	}
+	idx, found := col.append.strIndex[s]
+	if !found {
+		// Cache miss: add new unique value. We call AppendRowString on *String when possible to
+		// avoid the boxing inside col.index.AppendRow; fall back for non-String inner types.
+		if strCol, ok := col.index.(*String); ok {
+			strCol.AppendRowString(s)
+		} else if err := col.index.AppendRow(s); err != nil {
+			return err
+		}
+		idx = col.index.Rows() - 1
+		col.append.strIndex[s] = idx
+		col.append.index[s] = idx // keep len(col.append.index) correct for Encode
+	}
+	col.append.keys = append(col.append.keys, idx)
+	return nil
+}
+
 func (col *LowCardinality) Decode(reader *proto.Reader, rows int) error {
 	if rows == 0 {
 		return nil
@@ -199,7 +235,7 @@ func (col *LowCardinality) Encode(buffer *proto.Buffer) {
 		return
 	}
 	defer func() {
-		col.append.keys, col.append.index = nil, nil
+		col.append.keys, col.append.index, col.append.strIndex = nil, nil, nil
 	}()
 	ixLen := uint64(len(col.append.index))
 	switch {

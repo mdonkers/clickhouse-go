@@ -244,6 +244,13 @@ func (col *Enum8) AppendRow(elem any) error {
 	return nil
 }
 
+// AppendRowInt8 is a zero-allocation fast path for inserting an Enum8 value by its
+// raw int8 ordinal. The caller is responsible for ensuring the ordinal is a valid
+// enum value. Used by DirectMapInserter implementations to avoid the boxed AppendRow path.
+func (col *Enum8) AppendRowInt8(v int8) {
+	col.col.Append(proto.Enum8(v))
+}
+
 func (col *Enum8) Decode(reader *proto.Reader, rows int) error {
 	return col.col.DecodeColumn(reader, rows)
 }
