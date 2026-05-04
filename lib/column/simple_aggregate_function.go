@@ -54,6 +54,13 @@ func (col *SimpleAggregateFunction) Append(v any) ([]uint8, error) {
 func (col *SimpleAggregateFunction) AppendRow(v any) error {
 	return col.base.AppendRow(v)
 }
+
+// BaseColumn returns the inner base column wrapped by this SimpleAggregateFunction.
+// Used by DirectMapInserter implementations to unwrap to the concrete column type
+// (e.g. *Tuple) so that typed zero-alloc append methods can be used.
+func (col *SimpleAggregateFunction) BaseColumn() Interface {
+	return col.base
+}
 func (col *SimpleAggregateFunction) Decode(reader *proto.Reader, rows int) error {
 	return col.base.Decode(reader, rows)
 }
