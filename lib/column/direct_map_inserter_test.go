@@ -75,7 +75,6 @@ type directInserter struct {
 }
 
 func (d *directInserter) InsertTo(keyCol Interface, valueCol Interface) (int64, error) {
-	lc, _ := keyCol.(*LowCardinality)
 	tup, _ := valueCol.(*Tuple)
 	var valStr *String
 	var valInt8 *Int8
@@ -84,11 +83,8 @@ func (d *directInserter) InsertTo(keyCol Interface, valueCol Interface) (int64, 
 		valInt8, _ = tup.columns[1].(*Int8)
 	}
 	for _, e := range d.entries {
-		if lc != nil {
-			if err := lc.AppendRowString(e.key); err != nil {
-				return 0, err
-			}
-		} else if err := keyCol.AppendRow(e.key); err != nil {
+		// AppendRow dispatches via the string fast path inside LowCardinality — no extra interface needed.
+		if err := keyCol.AppendRow(e.key); err != nil {
 			return 0, err
 		}
 		if valStr != nil && valInt8 != nil {
@@ -223,15 +219,15 @@ func TestDirectMapInserter_MultipleRows(t *testing.T) {
 	}
 }
 
-// --- LowCardinality.AppendRowString tests ---
+// --- LowCardinality string fast path tests (via AppendRow) ---
 
-func TestLowCardinality_AppendRowString_UniqueKeys(t *testing.T) {
+func TestLowCardinality_AppendRow_String_UniqueKeys(t *testing.T) {
 	lc := newLCString("k")
 
 	keys := []string{"alpha", "beta", "gamma", "alpha", "beta", "alpha"}
 	for _, k := range keys {
-		if err := lc.AppendRowString(k); err != nil {
-			t.Fatalf("AppendRowString(%q): %v", k, err)
+		if err := lc.AppendRow(k); err != nil {
+			t.Fatalf("AppendRow(%q): %v", k, err)
 		}
 	}
 
@@ -252,13 +248,13 @@ func TestLowCardinality_AppendRowString_UniqueKeys(t *testing.T) {
 	}
 }
 
-func TestLowCardinality_AppendRowString_CacheHits_SameKeyIndex(t *testing.T) {
+func TestLowCardinality_AppendRow_String_CacheHits_SameKeyIndex(t *testing.T) {
 	lc := newLCString("k")
 
-	_ = lc.AppendRowString("x")
-	_ = lc.AppendRowString("y")
-	_ = lc.AppendRowString("x") // cache hit
-	_ = lc.AppendRowString("x") // cache hit
+	_ = lc.AppendRow("x")
+	_ = lc.AppendRow("y")
+	_ = lc.AppendRow("x") // cache hit
+	_ = lc.AppendRow("x") // cache hit
 
 	// append.keys should be [idx(x), idx(y), idx(x), idx(x)]
 	idxX := lc.append.strIndex["x"]
@@ -272,12 +268,12 @@ func TestLowCardinality_AppendRowString_CacheHits_SameKeyIndex(t *testing.T) {
 	}
 }
 
-func TestLowCardinality_AppendRowString_InSyncWithBoxedIndex(t *testing.T) {
+func TestLowCardinality_AppendRow_String_InSyncWithBoxedIndex(t *testing.T) {
 	lc := newLCString("k")
 
-	strings := []string{"foo", "bar", "baz", "foo", "bar"}
-	for _, s := range strings {
-		_ = lc.AppendRowString(s)
+	strs := []string{"foo", "bar", "baz", "foo", "bar"}
+	for _, s := range strs {
+		_ = lc.AppendRow(s)
 	}
 
 	// strIndex and index must agree on every key
@@ -299,10 +295,10 @@ func TestLowCardinality_AppendRowString_InSyncWithBoxedIndex(t *testing.T) {
 	}
 }
 
-func TestLowCardinality_AppendRowString_Reset_ClearsStrIndex(t *testing.T) {
+func TestLowCardinality_AppendRow_String_Reset_ClearsStrIndex(t *testing.T) {
 	lc := newLCString("k")
 
-	_ = lc.AppendRowString("pre-reset")
+	_ = lc.AppendRow("pre-reset")
 	if len(lc.append.strIndex) == 0 {
 		t.Fatal("expected strIndex to be populated before Reset")
 	}
@@ -317,28 +313,11 @@ func TestLowCardinality_AppendRowString_Reset_ClearsStrIndex(t *testing.T) {
 	}
 
 	// Must still work after Reset
-	if err := lc.AppendRowString("post-reset"); err != nil {
-		t.Fatalf("AppendRowString after Reset: %v", err)
+	if err := lc.AppendRow("post-reset"); err != nil {
+		t.Fatalf("AppendRow after Reset: %v", err)
 	}
 	if lc.Rows() != 1 {
 		t.Fatalf("expected 1 row after post-reset append, got %d", lc.Rows())
-	}
-}
-
-func TestLowCardinality_AppendRowString_ConsistentWithAppendRow(t *testing.T) {
-	// AppendRowString and AppendRow must produce the same key index for the same string.
-	lc1 := newLCString("k")
-	lc2 := newLCString("k")
-
-	keys := []string{"alpha", "beta", "alpha", "gamma"}
-	for _, k := range keys {
-		_ = lc1.AppendRowString(k)
-		_ = lc2.AppendRow(k)
-	}
-
-	if !reflect.DeepEqual(lc1.append.keys, lc2.append.keys) {
-		t.Errorf("AppendRowString produced different key sequence than AppendRow:\n  got  %v\n  want %v",
-			lc1.append.keys, lc2.append.keys)
 	}
 }
 
@@ -481,9 +460,6 @@ func BenchmarkDirectMapInserter(b *testing.B) {
 				col.keys.Reset()
 				col.values.Reset()
 				col.offsets.Reset()
-				col.keys.(*LowCardinality).append.index = make(map[any]int)
-				clear(col.keys.(*LowCardinality).append.strIndex)
-				col.keys.(*LowCardinality).append.keys = col.keys.(*LowCardinality).append.keys[:0]
 				_ = col.AppendRow(ins)
 			}
 		})
@@ -497,31 +473,21 @@ func BenchmarkDirectMapInserter(b *testing.B) {
 				col.keys.Reset()
 				col.values.Reset()
 				col.offsets.Reset()
-				col.keys.(*LowCardinality).append.index = make(map[any]int)
-				clear(col.keys.(*LowCardinality).append.strIndex)
-				col.keys.(*LowCardinality).append.keys = col.keys.(*LowCardinality).append.keys[:0]
 				_ = col.AppendRow(ins)
 			}
 		})
 	}
 }
 
-func BenchmarkLowCardinality_AppendRowString(b *testing.B) {
+// BenchmarkLowCardinality_AppendRow_String measures the string fast path inside AppendRow
+// (map[string]int strIndex) vs passing a non-string value that takes the boxed index path.
+func BenchmarkLowCardinality_AppendRow_String(b *testing.B) {
 	keys := []string{
 		"service.name", "http.method", "http.status_code", "db.system",
 		"net.peer.name", "messaging.system",
 	}
 
-	b.Run("AppendRowString", func(b *testing.B) {
-		b.ReportAllocs()
-		lc := newLCString("k")
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_ = lc.AppendRowString(keys[i%len(keys)])
-		}
-	})
-
-	b.Run("AppendRow_boxed", func(b *testing.B) {
+	b.Run("string_fast_path", func(b *testing.B) {
 		b.ReportAllocs()
 		lc := newLCString("k")
 		b.ResetTimer()
