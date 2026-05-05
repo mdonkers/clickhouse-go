@@ -32,6 +32,14 @@ func (col *Tuple) Reset() {
 	}
 }
 
+// Columns returns the ordered list of sub-column objects backing this Tuple.
+// Callers may type-assert elements to concrete column types (e.g. *String, *Int8)
+// and call typed methods (e.g. AppendRowString, AppendRowInt8) to insert rows
+// without interface boxing, which is significantly cheaper on hot insert paths.
+func (col *Tuple) Columns() []Interface {
+	return col.columns
+}
+
 func (col *Tuple) Name() string {
 	return col.name
 }

@@ -55,7 +55,7 @@ func TestLowCardinalityResetAfterEncode(t *testing.T) {
 	var buf chproto.Buffer
 	lc.Encode(&buf)
 
-	assert.Nil(t, lc.append.index)
+	assert.Empty(t, lc.append.index)
 
 	lc.Reset()
 
@@ -82,7 +82,7 @@ func TestLowCardinalityAppendAfterEncodeWithoutReset(t *testing.T) {
 	var buf chproto.Buffer
 	lc.Encode(&buf)
 
-	assert.Nil(t, lc.append.index)
+	assert.Empty(t, lc.append.index)
 
 	err = lc.AppendRow("new_value")
 	assert.NoError(t, err)
@@ -103,7 +103,7 @@ func TestLowCardinalityEncodeThenResetThenAppend(t *testing.T) {
 	var buf chproto.Buffer
 	lc.Encode(&buf)
 
-	assert.Nil(t, lc.append.index)
+	assert.Empty(t, lc.append.index)
 
 	lc.Reset()
 

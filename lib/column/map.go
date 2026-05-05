@@ -37,6 +37,16 @@ type IterableOrderedMap interface {
 	Iterator() MapIterator
 }
 
+// DirectMapInserter is an optional interface that a map value may implement to write
+// key/value pairs directly into the driver's internal column storage, bypassing the
+// boxed Key() / Value() iterator used by IterableOrderedMap. Implementations that know
+// their key/value types statically can call typed methods (e.g. AppendRowString) on the
+// provided column objects to avoid interface boxing on the hot insert path.
+// InsertTo must return the exact number of key/value pairs written.
+type DirectMapInserter interface {
+	InsertTo(keyCol Interface, valueCol Interface) (int64, error)
+}
+
 func (col *Map) Reset() {
 	col.keys.Reset()
 	col.values.Reset()
@@ -188,6 +198,19 @@ func (col *Map) AppendRow(v any) error {
 			prev = col.offsets.col.Row(n - 1)
 		}
 		col.offsets.col.Append(prev + size)
+		return nil
+	}
+
+	if inserter, ok := v.(DirectMapInserter); ok {
+		var prev int64
+		if n := col.offsets.Rows(); n != 0 {
+			prev = col.offsets.col.Row(n - 1)
+		}
+		n, err := inserter.InsertTo(col.keys, col.values)
+		if err != nil {
+			return err
+		}
+		col.offsets.col.Append(prev + n)
 		return nil
 	}
 
