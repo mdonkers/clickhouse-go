@@ -47,8 +47,9 @@ type LowCardinality struct {
 	keys64 UInt64
 
 	append struct {
-		keys  []int
-		index map[any]int
+		keys     []int
+		index    map[any]int
+		strIndex map[string]int // zero-alloc cache for string LowCardinality; kept in sync with index
 	}
 	name string
 }
@@ -60,7 +61,8 @@ func (col *LowCardinality) Reset() {
 	col.keys16.Reset()
 	col.keys32.Reset()
 	col.keys64.Reset()
-	col.append.index = make(map[any]int)
+	clear(col.append.index)
+	clear(col.append.strIndex)
 	col.append.keys = col.append.keys[:0]
 }
 
@@ -143,6 +145,23 @@ func (col *LowCardinality) AppendRow(v any) error {
 	switch x := v.(type) {
 	case time.Time:
 		v = x.Truncate(time.Second)
+	case string:
+		// String fast path: use map[string]int to avoid interface boxing on every cache hit.
+		// Cache misses still box once via col.append.index to keep Encode in sync.
+		if col.append.strIndex == nil {
+			col.append.strIndex = make(map[string]int, 16)
+		}
+		idx, found := col.append.strIndex[x]
+		if !found {
+			if err := col.index.AppendRow(x); err != nil {
+				return err
+			}
+			idx = col.index.Rows() - 1
+			col.append.strIndex[x] = idx
+			col.append.index[x] = idx
+		}
+		col.append.keys = append(col.append.keys, idx)
+		return nil
 	}
 	if _, found := col.append.index[v]; !found {
 		if err := col.index.AppendRow(v); err != nil {
@@ -203,7 +222,9 @@ func (col *LowCardinality) Encode(buffer *proto.Buffer) {
 		return
 	}
 	defer func() {
-		col.append.keys, col.append.index = nil, nil
+		col.append.keys = col.append.keys[:0]
+		clear(col.append.index)
+		clear(col.append.strIndex)
 	}()
 	ixLen := uint64(len(col.append.index))
 	switch {
