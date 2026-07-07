@@ -173,6 +173,41 @@ func (col *LowCardinality) AppendRow(v any) error {
 	return nil
 }
 
+// AppendString appends a string value using the dictionary fast path without
+// boxing the value into an interface. It mirrors AppendRow's string case but
+// avoids the runtime.convTstring allocation that AppendRow(any) incurs on every
+// call — the dominant cost when inserting attribute-map keys. Valid only for
+// non-nullable LowCardinality(String) columns; other element types must use
+// AppendRow. Cache hits are allocation-free; on a dictionary miss the value is
+// recorded in the boxed index map (one boxing) to stay in sync with AppendRow.
+func (col *LowCardinality) AppendString(v string) error {
+	col.rows++
+	if col.index.Rows() == 0 { // init
+		if col.index.AppendRow(nil); col.nullable {
+			col.index.AppendRow(nil)
+		}
+	}
+	if col.append.strIndex == nil {
+		col.append.strIndex = make(map[string]int, 16)
+	}
+	if col.append.index == nil {
+		col.append.index = make(map[any]int)
+	}
+	idx, found := col.append.strIndex[v]
+	if !found {
+		if sa, ok := col.index.(*String); ok {
+			_ = sa.AppendString(v)
+		} else if err := col.index.AppendRow(v); err != nil {
+			return err
+		}
+		idx = col.index.Rows() - 1
+		col.append.strIndex[v] = idx
+		col.append.index[v] = idx
+	}
+	col.append.keys = append(col.append.keys, idx)
+	return nil
+}
+
 func (col *LowCardinality) Decode(reader *proto.Reader, rows int) error {
 	if rows == 0 {
 		return nil

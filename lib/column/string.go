@@ -143,6 +143,15 @@ func (col *String) AppendRow(v any) error {
 	return nil
 }
 
+// AppendString appends v without boxing it into an interface, avoiding the
+// per-row heap allocation (runtime.convTstring) that AppendRow(any) incurs for
+// every string. It is equivalent to AppendRow(v) for a string argument and never
+// fails; the error return keeps a uniform signature with other typed appenders.
+func (col *String) AppendString(v string) error {
+	col.col.Append(v)
+	return nil
+}
+
 func (col *String) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []string:
